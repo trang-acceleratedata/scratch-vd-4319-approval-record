@@ -31,11 +31,21 @@ while [ $# -gt 0 ]; do
 done
 
 cd "$(dirname "$0")/.."
-repo="$(git rev-parse --show-toplevel)"
-case "$(basename "$repo")" in
-  scratch-vd-4319-approval-record) ;;
+
+# Identify the repo by its remote, not by its directory name: a clone can live in
+# any directory, and a directory name is trivially wrong in both directions — it
+# would refuse a legitimate clone and accept a renamed one. This script deletes
+# files and force-pushes, so the check has to mean something.
+FIXTURE_REPO="scratch-vd-4319-approval-record"
+origin="$(git remote get-url origin 2>/dev/null || true)"
+if [ -z "$origin" ]; then
+  echo "refusing to run: no 'origin' remote, so this cannot be confirmed as $FIXTURE_REPO" >&2
+  exit 1
+fi
+case "$origin" in
+  *"$FIXTURE_REPO"*) ;;
   *)
-    echo "refusing to run outside the scratch fixture repo (found $(basename "$repo"))" >&2
+    echo "refusing to run: origin is $origin, not $FIXTURE_REPO" >&2
     exit 1
     ;;
 esac

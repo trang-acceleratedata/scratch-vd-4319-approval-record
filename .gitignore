@@ -1,0 +1,9 @@
+# Agent and tooling output — a run's artefacts are never part of the baseline.
+*.duckdb
+*.duckdb.wal
+.venv*/
+__pycache__/
+target/
+dbt_packages/
+logs/
+.DS_Store

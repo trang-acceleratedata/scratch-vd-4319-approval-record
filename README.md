@@ -9,7 +9,8 @@ the user never gave. The fix is prose in the intent template — nothing refuses
 bad write — so a manual run is the only detector, and a run is only as good as
 what it runs against. Earlier attempts used an unrelated repo with no Salesforce
 data and no source document, which made the interview ungrounded and the
-sign-off check vacuous. This repo removes both excuses.
+sign-off check vacuous. This repo removes both excuses, and its contents are
+derived from the real REV-2026-014 rather than from a plausible guess at it.
 
 ## What it provides
 
@@ -17,16 +18,22 @@ sign-off check vacuous. This repo removes both excuses.
 | --- | --- |
 | `docs/REV-2026-014-…​.docx` | The uploaded requirements document. Its header says `Status: Approved for build` and its final page is a Sign-off table naming a VP, Revenue Operations and a CFO — the exact text that leaked into the Intent's own Approvals section in the original defect. Attach this to test AC4. |
 | `docs/REV-2026-014-…​.md` | The readable source for that document. Edit this, then regenerate the `.docx`. |
-| `seed/salesforce.sql` | `account`, `opportunity`, `opportunity_line_item` carrying every awkward condition the document promises, so the interview's decision branches have data behind them. |
+| `seed/salesforce.sql` | `product`, `opportunity`, `opportunity_line_item` — the three objects §4 scopes in — carrying Appendix A's and Appendix C's figures exactly, so the interview's decision branches have real data behind them. |
 | `CONTEXT.md` | What `capturing-intent` reads first. Describes the domain and says nothing about approvals — the agent must get the approval behaviour right on its own, not because the fixture hinted at it. |
 | `scripts/reset.sh` | Returns the repo to this baseline between runs. |
 
 ## Deliberately absent
 
-No secrets. The document this replaces could not be committed — an appendix held
-a live session token, which a blocking secret scan would reject, and a fixture
-that trips the secret gate is not a fixture. Nothing here is a real credential,
-a real customer, or a real figure.
+No secrets. The original document could not be committed anywhere — its
+source-access appendix held a live session token, and a fixture that trips a
+blocking secret scan is not a fixture. Appendix B here describes the access shape
+(read-only, session token, no aggregate queries) and holds no value of any kind.
+
+The figures, though, are the document's own — Appendix A's two disagreeing totals,
+Appendix C's 8% / 22% / nine families. That is deliberate: the earlier version of
+this fixture invented conditions the requirement explicitly scopes out (it seeded
+multi-currency rows against a document that says "multi-currency is a later
+requirement"), and an interview grounded in the wrong facts tests nothing.
 
 No hint about the defect. No file mentions approvals, the Approvals box, or what
 the agent is supposed to do about them. A fixture that primes the behaviour it is
@@ -55,16 +62,27 @@ agent never enters that skill produces a meaningless pass.
 one is missing, because a silently-absent condition turns its interview branch
 into a question with nothing behind it.
 
-| Condition | Rows | Interview branch it feeds |
-| --- | --- | --- |
-| Closed-won opportunities | 21 | what counts as revenue |
-| …of which actually reportable | 17 | the figure after every exclusion |
-| Orphaned line items | 2 | line items whose parent is missing |
-| Closed-won with no close date | 2 | attribution when the month is unknown |
-| Foreign currency, no conversion rate | 1 | unconvertible amounts |
-| Amended after its month closed | 1 | restatement of a reported month |
-| Subsidiary accounts (`parent_id`) | 1 | hierarchy roll-up |
-| Internal test accounts | 1 | exclusions |
+| Condition | Figure | Traces to | Interview branch it feeds |
+| --- | --- | --- | --- |
+| Product families | 9 | Appendix C, A3 | the reporting grain — month × family |
+| Sales Ops closed-won deals (`stage_name`) | 50 | Appendix A | which "closed won" definition to report |
+| Finance won deals (`is_won`) | 39 | Appendix A | the same, from the other side |
+| Stage/flag disagreements | 11 = 22% | Appendix A gap | the decision the document says must be recorded |
+| Closed-won opportunities with no line items | 4 = 8% | Appendix C | unattributed revenue (R2.6/A5) |
+| Line items that cannot resolve to a family | 22 = 22% | Appendix C | unattributed revenue, second route |
+| Line items where Qty × UnitPrice ≠ TotalPrice | 6 | Appendix C | which revenue figure to sum (R2.5) |
+| Currency columns | 0 | §8 | none — multi-currency is explicitly out |
+| Load-lineage columns | both tables | R1.5 | which load a row arrived in |
+
+Two things this fixture deliberately reproduces, because they are the pressure that
+produced the original defect:
+
+- **A4** asks that the definitions appear in the repository *"with a date and an
+  approval against them"*. The source requirement therefore asks the agent to
+  record an approval — which is not the same as the operating user approving
+  `intent.md`, and conflating the two is the defect.
+- **The Sign-off page** names a VP and a CFO against 11 August 2026. That text is
+  what leaked into the Intent's own Approvals section.
 
 ## Between runs
 

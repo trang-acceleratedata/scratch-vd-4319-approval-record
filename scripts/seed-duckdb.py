@@ -26,60 +26,59 @@ SEED = Path(__file__).resolve().parent.parent / "seed" / "salesforce.sql"
 # fixture that silently lost one of them turns the matching interview branch into
 # a question with nothing behind it.
 EXPECTATIONS: list[tuple[str, str, int]] = [
-    ("accounts", "SELECT count(*) FROM account", 9),
-    ("opportunities", "SELECT count(*) FROM opportunity", 24),
-    ("line items", "SELECT count(*) FROM opportunity_line_item", 17),
+    # Every figure traces to REV-2026-014, so a drifting fixture fails loudly rather
+    # than quietly producing an interview about a world the document does not describe.
+    ("products", "SELECT count(*) FROM product", 18),
+    ("product families (doc Appendix C: 9)", "SELECT count(DISTINCT product_family) FROM product", 9),
+    ("opportunities", "SELECT count(*) FROM opportunity", 50),
+    ("line items", "SELECT count(*) FROM opportunity_line_item", 100),
     (
-        "closed-won rows",
+        "Sales Ops closed-won deals (stage_name)",
         "SELECT count(*) FROM opportunity WHERE stage_name = 'Closed Won'",
-        21,
+        50,
     ),
     (
-        "orphaned line items",
-        """SELECT count(*) FROM opportunity_line_item li
-           LEFT JOIN opportunity o ON o.id = li.opportunity_id
-           WHERE o.id IS NULL""",
-        2,
+        "Finance won deals (is_won) — doc Appendix A gap",
+        "SELECT count(*) FROM opportunity WHERE is_won",
+        39,
     ),
     (
-        "closed-won rows with no close date",
-        "SELECT count(*) FROM opportunity WHERE stage_name = 'Closed Won' AND close_date IS NULL",
-        2,
+        "stage/flag disagreements = 22% of 50 (Appendix A)",
+        "SELECT count(*) FROM opportunity WHERE stage_name = 'Closed Won' AND NOT is_won",
+        11,
     ),
     (
-        "foreign-currency rows with no conversion rate",
-        """SELECT count(*) FROM opportunity
-           WHERE currency_iso_code <> 'USD' AND conversion_rate IS NULL""",
-        1,
-    ),
-    (
-        "amended-after-close rows",
-        """SELECT count(*) FROM opportunity
-           WHERE stage_name = 'Closed Won'
-             AND close_date IS NOT NULL
-             AND date_trunc('month', last_modified_date) > date_trunc('month', close_date)""",
-        1,
-    ),
-    (
-        # 21 closed-won, minus 2 with no month, 1 unconvertible, 1 internal.
-        "closed-won rows that are actually reportable",
+        "closed-won opportunities with no line items = 8% (Appendix C)",
         """SELECT count(*) FROM opportunity o
-           JOIN account a ON a.id = o.account_id
            WHERE o.stage_name = 'Closed Won'
-             AND o.close_date IS NOT NULL
-             AND NOT (o.currency_iso_code <> 'USD' AND o.conversion_rate IS NULL)
-             AND a.industry <> 'Internal'""",
-        17,
+             AND NOT EXISTS (SELECT 1 FROM opportunity_line_item li WHERE li.opportunity_id = o.id)""",
+        4,
     ),
     (
-        "subsidiary accounts",
-        "SELECT count(*) FROM account WHERE parent_id IS NOT NULL",
-        1,
+        "line items that cannot resolve to a family = 22% (Appendix C)",
+        """SELECT count(*) FROM opportunity_line_item li
+           LEFT JOIN product p ON p.id = li.product_id
+           WHERE p.id IS NULL""",
+        22,
     ),
     (
-        "internal test accounts",
-        "SELECT count(*) FROM account WHERE industry = 'Internal'",
-        1,
+        "line items where quantity * unit_price <> total_price (Appendix C)",
+        "SELECT count(*) FROM opportunity_line_item WHERE quantity * unit_price <> total_price",
+        6,
+    ),
+    (
+        "single-currency: no currency column exists (doc s8)",
+        """SELECT count(*) FROM information_schema.columns
+           WHERE table_name IN ('opportunity','opportunity_line_item')
+             AND lower(column_name) LIKE '%currenc%'""",
+        0,
+    ),
+    (
+        "load lineage present on both loaded tables (R1.5)",
+        """SELECT count(DISTINCT table_name) FROM information_schema.columns
+           WHERE table_name IN ('opportunity','opportunity_line_item')
+             AND column_name = 'load_batch_id'""",
+        2,
     ),
 ]
 

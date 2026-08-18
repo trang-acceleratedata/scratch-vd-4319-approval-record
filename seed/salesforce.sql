@@ -1,112 +1,242 @@
 -- Salesforce-shaped fixture for the VD-4319 approval-record runbook.
 --
--- Every condition listed in section 4 of REV-2026-014 is physically present here,
--- so the interview's decision branches have something real behind them and
--- `identifying-data-slice` has data to profile. Without that, a run captures an
--- intent about data that does not exist and the interview is theatre.
+-- Rebuilt from the real REV-2026-014 rather than invented. Every figure below is
+-- traceable to the document, because a fixture that contradicts its own
+-- requirement produces an interview about a world that does not exist:
 --
--- Deliberately small (24 opportunities) — the point is coverage of the awkward
--- cases, not volume.
+--   R2.1 / A3   monthly revenue by calendar month and product family, nine families
+--   R2.3        product family comes from the product record, not the deal
+--   R2.6 / A5   revenue that cannot reach a family is its own visible figure
+--   Appendix A  Sales Ops and Finance disagree by 22% of deals
+--   Appendix C  8% of closed-won opportunities have no line items
+--               22% of line items cannot resolve to a family
+--               Quantity × UnitPrice does not always equal TotalPrice
+--   §8          single-currency USD; multi-currency is explicitly a later requirement
+--
+-- Scaled to 50 opportunities and 100 line items so those percentages land on whole
+-- rows and the counts are checkable rather than approximate.
 
 DROP TABLE IF EXISTS opportunity_line_item;
 DROP TABLE IF EXISTS opportunity;
-DROP TABLE IF EXISTS account;
+DROP TABLE IF EXISTS product;
 
-CREATE TABLE account (
-  id              VARCHAR PRIMARY KEY,
-  name            VARCHAR NOT NULL,
-  parent_id       VARCHAR,
-  industry        VARCHAR,
-  billing_country VARCHAR
+-- R2.3: family lives here, never on the deal.
+CREATE TABLE product (
+  id             VARCHAR PRIMARY KEY,
+  name           VARCHAR NOT NULL,
+  product_family VARCHAR NOT NULL,
+  is_active      BOOLEAN NOT NULL DEFAULT TRUE
 );
 
 CREATE TABLE opportunity (
   id                 VARCHAR PRIMARY KEY,
-  account_id         VARCHAR,
   name               VARCHAR,
-  stage_name         VARCHAR NOT NULL,
+  stage_name         VARCHAR NOT NULL,   -- Sales Ops reads this
+  is_won             BOOLEAN,            -- Finance reads this; they disagree
   amount             DECIMAL(18, 2),
-  currency_iso_code  VARCHAR,
-  conversion_rate    DECIMAL(12, 6),
   close_date         DATE,
   created_date       TIMESTAMP,
-  last_modified_date TIMESTAMP
+  last_modified_date TIMESTAMP,
+  load_batch_id      VARCHAR,            -- R1.5
+  loaded_at          TIMESTAMP           -- R1.5
 );
 
 CREATE TABLE opportunity_line_item (
   id             VARCHAR PRIMARY KEY,
   opportunity_id VARCHAR NOT NULL,
-  product_name   VARCHAR,
+  product_id     VARCHAR,               -- NULL or unresolvable => unattributed
   quantity       INTEGER,
-  unit_price     DECIMAL(18, 2)
+  unit_price     DECIMAL(18, 2),
+  total_price    DECIMAL(18, 2),        -- deliberately disagrees on some rows
+  load_batch_id  VARCHAR,
+  loaded_at      TIMESTAMP
 );
 
--- Accounts. ACC-006 is a subsidiary of ACC-002 (hierarchy branch); ACC-009 is an
--- internal training account (the "test accounts" condition).
-INSERT INTO account VALUES
-  ('ACC-001', 'Northwind Trading',        NULL,      'Retail',        'US'),
-  ('ACC-002', 'Initech Group',            NULL,      'Technology',    'US'),
-  ('ACC-003', 'Umbra Logistics',          NULL,      'Logistics',     'DE'),
-  ('ACC-004', 'Kessler Health',           NULL,      'Healthcare',    'US'),
-  ('ACC-005', 'Ravenna Foods',            NULL,      'Manufacturing', 'IT'),
-  ('ACC-006', 'Initech Labs',             'ACC-002', 'Technology',    'US'),
-  ('ACC-007', 'Halberd Financial',        NULL,      'Financial',     'GB'),
-  ('ACC-008', 'Solstice Media',           NULL,      'Media',         'US'),
-  ('ACC-009', 'ZZ Internal Test Account', NULL,      'Internal',      'US');
+-- The nine families of Appendix C. Cascade Cycles sells bikes and parts.
+INSERT INTO product VALUES
+  ('PRD-01','Summit Trail 29 Frameset','Mountain Bikes',       TRUE),
+  ('PRD-02','Summit Trail Enduro',     'Mountain Bikes',       TRUE),
+  ('PRD-03','Velo Aero Road',          'Road Bikes',           TRUE),
+  ('PRD-04','Velo Climb Road',         'Road Bikes',           TRUE),
+  ('PRD-05','Cascade Commuter 7',      'Urban Bikes',          TRUE),
+  ('PRD-06','Cascade Cargo Lift',      'Urban Bikes',          TRUE),
+  ('PRD-07','Cascade Kids 20',         'Junior Bikes',         TRUE),
+  ('PRD-08','Torque Hydraulic Brake',  'Braking Components',   TRUE),
+  ('PRD-09','Torque Rotor 180',        'Braking Components',   TRUE),
+  ('PRD-10','ShiftPro 12s Derailleur', 'Drivetrain Components',TRUE),
+  ('PRD-11','ShiftPro Cassette 11-50', 'Drivetrain Components',TRUE),
+  ('PRD-12','Alpine Carbon Wheelset',  'Wheels',               TRUE),
+  ('PRD-13','Alpine Alloy Wheelset',   'Wheels',               TRUE),
+  ('PRD-14','GripFast Trail Tyre',     'Tyres',                TRUE),
+  ('PRD-15','GripFast Road Tyre',      'Tyres',                TRUE),
+  ('PRD-16','Contour Saddle Pro',      'Accessories',          TRUE),
+  ('PRD-17','Contour Bar Tape',        'Accessories',          TRUE),
+  ('PRD-18','Legacy Rim Brake Set',    'Braking Components',   FALSE);
 
--- Opportunities.
---   OPP-020        closed won, then amended later     (restatement condition)
---   OPP-021/022    closed won with a NULL close_date  (missing attribution month)
---   OPP-023        booked in EUR with NULL rate       (unconvertible)
---   OPP-024        internal test account              (must not reach the figure)
---   Closed Lost / Negotiation rows exist so "Closed Won only" is a real filter.
+-- 50 opportunities. 39 have stage_name='Closed Won' AND is_won=TRUE (Finance).
+-- 11 more carry stage_name='Closed Won' with is_won=FALSE — the Appendix A gap:
+-- Sales Ops counts 50, Finance counts 39, a difference of 11 (22% of 50).
+-- 4 of the 50 (8%, Appendix C) have no line items at all.
 INSERT INTO opportunity VALUES
-  ('OPP-001','ACC-001','Northwind Q2 renewal',     'Closed Won',  48000.00,'USD',1.000000,DATE '2026-04-14',TIMESTAMP '2026-02-03 09:12:00',TIMESTAMP '2026-04-14 16:20:00'),
-  ('OPP-002','ACC-001','Northwind expansion',      'Closed Won',  12500.00,'USD',1.000000,DATE '2026-05-02',TIMESTAMP '2026-03-11 10:04:00',TIMESTAMP '2026-05-02 11:41:00'),
-  ('OPP-003','ACC-002','Initech platform',         'Closed Won', 210000.00,'USD',1.000000,DATE '2026-05-27',TIMESTAMP '2026-01-19 14:33:00',TIMESTAMP '2026-05-27 17:02:00'),
-  ('OPP-004','ACC-003','Umbra freight pilot',      'Closed Won',  67500.00,'EUR',1.082000,DATE '2026-06-09',TIMESTAMP '2026-04-01 08:55:00',TIMESTAMP '2026-06-09 12:10:00'),
-  ('OPP-005','ACC-004','Kessler onboarding',       'Closed Won',  95250.00,'USD',1.000000,DATE '2026-06-30',TIMESTAMP '2026-05-06 13:20:00',TIMESTAMP '2026-06-30 18:45:00'),
-  ('OPP-006','ACC-005','Ravenna line upgrade',     'Closed Won', 143000.00,'EUR',1.079500,DATE '2026-07-15',TIMESTAMP '2026-05-22 09:00:00',TIMESTAMP '2026-07-15 15:30:00'),
-  ('OPP-007','ACC-006','Initech Labs tooling',     'Closed Won',  38400.00,'USD',1.000000,DATE '2026-07-21',TIMESTAMP '2026-06-02 11:15:00',TIMESTAMP '2026-07-21 10:05:00'),
-  ('OPP-008','ACC-007','Halberd compliance',       'Closed Won', 176800.00,'GBP',1.271000,DATE '2026-07-28',TIMESTAMP '2026-04-18 16:40:00',TIMESTAMP '2026-07-28 09:25:00'),
-  ('OPP-009','ACC-008','Solstice campaign suite',  'Closed Won',  54900.00,'USD',1.000000,DATE '2026-08-04',TIMESTAMP '2026-06-14 10:30:00',TIMESTAMP '2026-08-04 14:12:00'),
-  ('OPP-010','ACC-002','Initech add-on seats',     'Closed Won',  29750.00,'USD',1.000000,DATE '2026-08-11',TIMESTAMP '2026-07-01 09:45:00',TIMESTAMP '2026-08-11 11:00:00'),
-  ('OPP-011','ACC-003','Umbra route analytics',    'Closed Lost', 88000.00,'EUR',1.081000,DATE '2026-06-18',TIMESTAMP '2026-03-27 12:00:00',TIMESTAMP '2026-06-18 13:15:00'),
-  ('OPP-012','ACC-004','Kessler regional rollout', 'Negotiation',320000.00,'USD',1.000000,DATE '2026-09-30',TIMESTAMP '2026-06-09 15:10:00',TIMESTAMP '2026-08-12 10:20:00'),
-  ('OPP-013','ACC-005','Ravenna packaging',        'Closed Lost', 45000.00,'EUR',1.080000,DATE '2026-05-19',TIMESTAMP '2026-02-28 11:30:00',TIMESTAMP '2026-05-19 16:00:00'),
-  ('OPP-014','ACC-001','Northwind pilot 2025',     'Closed Won',  31200.00,'USD',1.000000,DATE '2025-11-12',TIMESTAMP '2025-09-04 09:00:00',TIMESTAMP '2025-11-12 15:45:00'),
-  ('OPP-015','ACC-007','Halberd data migration',   'Closed Won', 122400.00,'GBP',1.268000,DATE '2025-12-20',TIMESTAMP '2025-10-15 10:20:00',TIMESTAMP '2025-12-20 12:30:00'),
-  ('OPP-016','ACC-008','Solstice retainer 2026',   'Closed Won',  84000.00,'USD',1.000000,DATE '2026-01-30',TIMESTAMP '2025-11-28 14:00:00',TIMESTAMP '2026-01-30 09:50:00'),
-  ('OPP-017','ACC-002','Initech security review',  'Closed Won',  19800.00,'USD',1.000000,DATE '2026-02-27',TIMESTAMP '2026-01-08 08:40:00',TIMESTAMP '2026-02-27 17:15:00'),
-  ('OPP-018','ACC-006','Initech Labs sandbox',     'Closed Won',  15600.00,'USD',1.000000,DATE '2026-03-13',TIMESTAMP '2026-01-30 13:50:00',TIMESTAMP '2026-03-13 10:35:00'),
-  ('OPP-019','ACC-005','Ravenna maintenance',      'Closed Won',  27300.00,'EUR',1.077000,DATE '2026-03-31',TIMESTAMP '2026-02-11 09:25:00',TIMESTAMP '2026-03-31 16:40:00'),
-  -- Amended after the month closed: close_date stays in April, amount revised in August.
-  ('OPP-020','ACC-004','Kessler analytics tier',   'Closed Won', 118500.00,'USD',1.000000,DATE '2026-04-28',TIMESTAMP '2026-02-19 10:10:00',TIMESTAMP '2026-08-06 09:15:00'),
-  -- Closed won with no close date at all.
-  ('OPP-021','ACC-003','Umbra spot shipments',     'Closed Won',  22400.00,'EUR',1.080500,NULL,            TIMESTAMP '2026-05-14 11:05:00',TIMESTAMP '2026-06-01 10:00:00'),
-  ('OPP-022','ACC-008','Solstice one-off creative','Closed Won',   9600.00,'USD',1.000000,NULL,            TIMESTAMP '2026-07-03 15:30:00',TIMESTAMP '2026-07-19 12:45:00'),
-  -- Foreign currency with no conversion rate.
-  ('OPP-023','ACC-005','Ravenna export order',     'Closed Won',  61250.00,'EUR',NULL,     DATE '2026-08-07',TIMESTAMP '2026-06-25 09:35:00',TIMESTAMP '2026-08-07 14:05:00'),
-  -- Internal training account.
-  ('OPP-024','ACC-009','Training scenario deal',   'Closed Won', 999999.00,'USD',1.000000,DATE '2026-08-01',TIMESTAMP '2026-07-30 09:00:00',TIMESTAMP '2026-08-01 09:30:00');
+  ('OPP-001','Ridgeline Cycles Q3 restock',   'Closed Won', TRUE,  184500.00, DATE '2026-07-14', TIMESTAMP '2026-05-02 09:00:00', TIMESTAMP '2026-07-14 16:20:00','BATCH-2026-08-01', TIMESTAMP '2026-08-01 02:00:00'),
+  ('OPP-002','Metro Bike Share fleet',        'Closed Won', TRUE,  962000.00, DATE '2026-06-30', TIMESTAMP '2026-03-18 10:30:00', TIMESTAMP '2026-06-30 18:45:00','BATCH-2026-08-01', TIMESTAMP '2026-08-01 02:00:00'),
+  ('OPP-003','Alpine Rentals season order',   'Closed Won', TRUE,  248750.00, DATE '2026-05-21', TIMESTAMP '2026-02-27 14:10:00', TIMESTAMP '2026-05-21 11:05:00','BATCH-2026-08-01', TIMESTAMP '2026-08-01 02:00:00'),
+  ('OPP-004','Coastal Cyclery wholesale',     'Closed Won', TRUE,  131200.00, DATE '2026-04-09', TIMESTAMP '2026-01-30 08:45:00', TIMESTAMP '2026-04-09 15:30:00','BATCH-2026-08-01', TIMESTAMP '2026-08-01 02:00:00'),
+  ('OPP-005','Northgate Sports annual',       'Closed Won', TRUE,  415600.00, DATE '2026-03-27', TIMESTAMP '2025-12-11 11:20:00', TIMESTAMP '2026-03-27 09:50:00','BATCH-2026-08-01', TIMESTAMP '2026-08-01 02:00:00'),
+  ('OPP-006','Trailhead Outfitters spring',   'Closed Won', TRUE,   97300.00, DATE '2026-02-18', TIMESTAMP '2025-11-22 13:00:00', TIMESTAMP '2026-02-18 17:15:00','BATCH-2026-08-01', TIMESTAMP '2026-08-01 02:00:00'),
+  ('OPP-007','Velocity Clubs bulk',           'Closed Won', TRUE,  208400.00, DATE '2026-01-23', TIMESTAMP '2025-10-30 09:35:00', TIMESTAMP '2026-01-23 12:40:00','BATCH-2026-08-01', TIMESTAMP '2026-08-01 02:00:00'),
+  ('OPP-008','Harbour Hire winter',           'Closed Won', TRUE,   74800.00, DATE '2025-12-16', TIMESTAMP '2025-09-19 10:05:00', TIMESTAMP '2025-12-16 14:25:00','BATCH-2026-08-01', TIMESTAMP '2026-08-01 02:00:00'),
+  ('OPP-009','Summit Schools programme',      'Closed Won', TRUE,  156900.00, DATE '2025-11-05', TIMESTAMP '2025-08-14 15:45:00', TIMESTAMP '2025-11-05 10:10:00','BATCH-2026-08-01', TIMESTAMP '2026-08-01 02:00:00'),
+  ('OPP-010','Riverside Rentals refresh',     'Closed Won', TRUE,  112450.00, DATE '2025-10-22', TIMESTAMP '2025-07-28 08:20:00', TIMESTAMP '2025-10-22 16:00:00','BATCH-2026-08-01', TIMESTAMP '2026-08-01 02:00:00'),
+  ('OPP-011','Peakline Distribution H2',      'Closed Won', TRUE,  534200.00, DATE '2026-07-02', TIMESTAMP '2026-04-11 09:15:00', TIMESTAMP '2026-07-02 13:35:00','BATCH-2026-08-01', TIMESTAMP '2026-08-01 02:00:00'),
+  ('OPP-012','Urban Pedal fleet expansion',   'Closed Won', TRUE,  289000.00, DATE '2026-06-11', TIMESTAMP '2026-03-02 12:50:00', TIMESTAMP '2026-06-11 11:20:00','BATCH-2026-08-01', TIMESTAMP '2026-08-01 02:00:00'),
+  ('OPP-013','Cascade Direct retail',         'Closed Won', TRUE,   68900.00, DATE '2026-05-08', TIMESTAMP '2026-02-14 10:40:00', TIMESTAMP '2026-05-08 15:55:00','BATCH-2026-08-01', TIMESTAMP '2026-08-01 02:00:00'),
+  ('OPP-014','Foothill Bikes co-op',          'Closed Won', TRUE,  143700.00, DATE '2026-04-24', TIMESTAMP '2026-01-19 14:30:00', TIMESTAMP '2026-04-24 09:05:00','BATCH-2026-08-01', TIMESTAMP '2026-08-01 02:00:00'),
+  ('OPP-015','Lakeside Tours seasonal',       'Closed Won', TRUE,   92600.00, DATE '2026-03-12', TIMESTAMP '2025-12-28 11:10:00', TIMESTAMP '2026-03-12 16:45:00','BATCH-2026-08-01', TIMESTAMP '2026-08-01 02:00:00'),
+  ('OPP-016','Ironworks Cycles trade',        'Closed Won', TRUE,  176300.00, DATE '2026-02-04', TIMESTAMP '2025-11-08 09:25:00', TIMESTAMP '2026-02-04 12:15:00','BATCH-2026-08-01', TIMESTAMP '2026-08-01 02:00:00'),
+  ('OPP-017','Southbank Hire renewal',        'Closed Won', TRUE,   58400.00, DATE '2026-01-09', TIMESTAMP '2025-10-15 13:40:00', TIMESTAMP '2026-01-09 10:30:00','BATCH-2026-08-01', TIMESTAMP '2026-08-01 02:00:00'),
+  ('OPP-018','Crestview Clubs order',         'Closed Won', TRUE,  121800.00, DATE '2025-12-03', TIMESTAMP '2025-09-06 15:20:00', TIMESTAMP '2025-12-03 17:50:00','BATCH-2026-08-01', TIMESTAMP '2026-08-01 02:00:00'),
+  ('OPP-019','Windward Sports autumn',        'Closed Won', TRUE,   87950.00, DATE '2025-11-19', TIMESTAMP '2025-08-25 10:55:00', TIMESTAMP '2025-11-19 14:05:00','BATCH-2026-08-01', TIMESTAMP '2026-08-01 02:00:00'),
+  ('OPP-020','Granite Peak resort fleet',     'Closed Won', TRUE,  312500.00, DATE '2025-10-08', TIMESTAMP '2025-07-14 09:30:00', TIMESTAMP '2025-10-08 11:40:00','BATCH-2026-08-01', TIMESTAMP '2026-08-01 02:00:00'),
+  ('OPP-021','Beacon Cycles quarterly',       'Closed Won', TRUE,   79400.00, DATE '2026-07-21', TIMESTAMP '2026-05-09 08:50:00', TIMESTAMP '2026-07-21 15:10:00','BATCH-2026-08-01', TIMESTAMP '2026-08-01 02:00:00'),
+  ('OPP-022','Eastvale Rentals fleet',        'Closed Won', TRUE,  198600.00, DATE '2026-06-04', TIMESTAMP '2026-03-21 12:15:00', TIMESTAMP '2026-06-04 09:45:00','BATCH-2026-08-01', TIMESTAMP '2026-08-01 02:00:00'),
+  ('OPP-023','Hilltop Schools bulk',          'Closed Won', TRUE,  104200.00, DATE '2026-05-15', TIMESTAMP '2026-02-06 14:35:00', TIMESTAMP '2026-05-15 16:25:00','BATCH-2026-08-01', TIMESTAMP '2026-08-01 02:00:00'),
+  ('OPP-024','Fairview Cyclery restock',      'Closed Won', TRUE,   63700.00, DATE '2026-04-02', TIMESTAMP '2026-01-12 10:20:00', TIMESTAMP '2026-04-02 13:00:00','BATCH-2026-08-01', TIMESTAMP '2026-08-01 02:00:00'),
+  ('OPP-025','Meridian Tours order',          'Closed Won', TRUE,  147900.00, DATE '2026-03-05', TIMESTAMP '2025-12-19 09:40:00', TIMESTAMP '2026-03-05 11:15:00','BATCH-2026-08-01', TIMESTAMP '2026-08-01 02:00:00'),
+  ('OPP-026','Redwood Hire spring',           'Closed Won', TRUE,   88300.00, DATE '2026-02-25', TIMESTAMP '2025-11-27 13:25:00', TIMESTAMP '2026-02-25 15:40:00','BATCH-2026-08-01', TIMESTAMP '2026-08-01 02:00:00'),
+  ('OPP-027','Kingsway Sports trade',         'Closed Won', TRUE,  215400.00, DATE '2026-01-16', TIMESTAMP '2025-10-22 11:00:00', TIMESTAMP '2026-01-16 10:50:00','BATCH-2026-08-01', TIMESTAMP '2026-08-01 02:00:00'),
+  ('OPP-028','Silverbrook Clubs order',       'Closed Won', TRUE,   71200.00, DATE '2025-12-10', TIMESTAMP '2025-09-13 15:10:00', TIMESTAMP '2025-12-10 12:30:00','BATCH-2026-08-01', TIMESTAMP '2026-08-01 02:00:00'),
+  ('OPP-029','Bayside Rentals winter',        'Closed Won', TRUE,   95600.00, DATE '2025-11-26', TIMESTAMP '2025-08-29 10:15:00', TIMESTAMP '2025-11-26 17:20:00','BATCH-2026-08-01', TIMESTAMP '2026-08-01 02:00:00'),
+  ('OPP-030','Highland Outfitters annual',    'Closed Won', TRUE,  267800.00, DATE '2025-10-15', TIMESTAMP '2025-07-21 09:05:00', TIMESTAMP '2025-10-15 14:55:00','BATCH-2026-08-01', TIMESTAMP '2026-08-01 02:00:00'),
+  ('OPP-031','Parkline Cycles restock',       'Closed Won', TRUE,   54900.00, DATE '2026-07-08', TIMESTAMP '2026-04-25 08:35:00', TIMESTAMP '2026-07-08 16:10:00','BATCH-2026-08-01', TIMESTAMP '2026-08-01 02:00:00'),
+  ('OPP-032','Westford Hire fleet',           'Closed Won', TRUE,  186200.00, DATE '2026-06-18', TIMESTAMP '2026-03-09 12:40:00', TIMESTAMP '2026-06-18 10:25:00','BATCH-2026-08-01', TIMESTAMP '2026-08-01 02:00:00'),
+  ('OPP-033','Ashgrove Schools order',        'Closed Won', TRUE,   82700.00, DATE '2026-05-29', TIMESTAMP '2026-02-20 14:00:00', TIMESTAMP '2026-05-29 13:45:00','BATCH-2026-08-01', TIMESTAMP '2026-08-01 02:00:00'),
+  ('OPP-034','Brookvale Cyclery trade',       'Closed Won', TRUE,  138500.00, DATE '2026-04-16', TIMESTAMP '2026-01-26 09:50:00', TIMESTAMP '2026-04-16 11:35:00','BATCH-2026-08-01', TIMESTAMP '2026-08-01 02:00:00'),
+  ('OPP-035','Cliffside Tours seasonal',      'Closed Won', TRUE,   66400.00, DATE '2026-03-19', TIMESTAMP '2026-01-05 13:15:00', TIMESTAMP '2026-03-19 15:05:00','BATCH-2026-08-01', TIMESTAMP '2026-08-01 02:00:00'),
+  ('OPP-036','Dunmore Sports bulk',           'Closed Won', TRUE,  159300.00, DATE '2026-02-11', TIMESTAMP '2025-11-15 10:30:00', TIMESTAMP '2026-02-11 12:50:00','BATCH-2026-08-01', TIMESTAMP '2026-08-01 02:00:00'),
+  ('OPP-037','Elmwood Clubs renewal',         'Closed Won', TRUE,   77800.00, DATE '2026-01-02', TIMESTAMP '2025-10-08 15:35:00', TIMESTAMP '2026-01-02 09:20:00','BATCH-2026-08-01', TIMESTAMP '2026-08-01 02:00:00'),
+  ('OPP-038','Fernhill Rentals order',        'Closed Won', TRUE,  103600.00, DATE '2025-12-24', TIMESTAMP '2025-09-27 11:45:00', TIMESTAMP '2025-12-24 16:30:00','BATCH-2026-08-01', TIMESTAMP '2026-08-01 02:00:00'),
+  ('OPP-039','Glenmore Outfitters autumn',    'Closed Won', TRUE,  124700.00, DATE '2025-11-12', TIMESTAMP '2025-08-18 09:20:00', TIMESTAMP '2025-11-12 13:55:00','BATCH-2026-08-01', TIMESTAMP '2026-08-01 02:00:00'),
+  -- The Appendix A gap: stage says won, the flag disagrees. 11 rows.
+  ('OPP-040','Marchmont Cycles order',        'Closed Won', FALSE,  91300.00, DATE '2026-07-25', TIMESTAMP '2026-05-14 10:10:00', TIMESTAMP '2026-07-25 14:40:00','BATCH-2026-08-01', TIMESTAMP '2026-08-01 02:00:00'),
+  ('OPP-041','Northmoor Hire fleet',          'Closed Won', FALSE, 167400.00, DATE '2026-06-22', TIMESTAMP '2026-03-28 13:30:00', TIMESTAMP '2026-06-22 11:50:00','BATCH-2026-08-01', TIMESTAMP '2026-08-01 02:00:00'),
+  ('OPP-042','Oakridge Schools bulk',         'Closed Won', FALSE,  85200.00, DATE '2026-05-01', TIMESTAMP '2026-02-11 09:45:00', TIMESTAMP '2026-05-01 15:20:00','BATCH-2026-08-01', TIMESTAMP '2026-08-01 02:00:00'),
+  ('OPP-043','Pinehurst Cyclery trade',       'Closed Won', FALSE, 112900.00, DATE '2026-04-11', TIMESTAMP '2026-01-22 14:20:00', TIMESTAMP '2026-04-11 10:05:00','BATCH-2026-08-01', TIMESTAMP '2026-08-01 02:00:00'),
+  ('OPP-044','Queensford Tours order',        'Closed Won', FALSE,  73500.00, DATE '2026-03-24', TIMESTAMP '2026-01-08 11:35:00', TIMESTAMP '2026-03-24 16:15:00','BATCH-2026-08-01', TIMESTAMP '2026-08-01 02:00:00'),
+  ('OPP-045','Rosemount Sports bulk',         'Closed Won', FALSE, 141600.00, DATE '2026-02-14', TIMESTAMP '2025-11-19 10:50:00', TIMESTAMP '2026-02-14 12:25:00','BATCH-2026-08-01', TIMESTAMP '2026-08-01 02:00:00'),
+  ('OPP-046','Stonebridge Clubs renewal',     'Closed Won', FALSE,  69800.00, DATE '2026-01-27', TIMESTAMP '2025-10-31 15:05:00', TIMESTAMP '2026-01-27 09:35:00','BATCH-2026-08-01', TIMESTAMP '2026-08-01 02:00:00'),
+  ('OPP-047','Thornbury Rentals winter',      'Closed Won', FALSE,  98100.00, DATE '2025-12-18', TIMESTAMP '2025-09-24 12:15:00', TIMESTAMP '2025-12-18 17:00:00','BATCH-2026-08-01', TIMESTAMP '2026-08-01 02:00:00'),
+  ('OPP-048','Underwood Outfitters order',    'Closed Won', FALSE, 128300.00, DATE '2025-11-28', TIMESTAMP '2025-09-02 09:30:00', TIMESTAMP '2025-11-28 14:20:00','BATCH-2026-08-01', TIMESTAMP '2026-08-01 02:00:00'),
+  ('OPP-049','Vanbrugh Cycles restock',       'Closed Won', FALSE,  61700.00, DATE '2025-10-30', TIMESTAMP '2025-08-06 13:55:00', TIMESTAMP '2025-10-30 11:10:00','BATCH-2026-08-01', TIMESTAMP '2026-08-01 02:00:00'),
+  ('OPP-050','Whitmore Hire seasonal',        'Closed Won', FALSE, 153900.00, DATE '2025-09-17', TIMESTAMP '2025-07-03 10:25:00', TIMESTAMP '2025-09-17 15:45:00','BATCH-2026-08-01', TIMESTAMP '2026-08-01 02:00:00');
 
--- Line items. LI-901 and LI-902 reference opportunities absent from the
--- opportunity table (the orphan condition); the rest are well-formed.
+-- 100 line items.
+--   * OPP-047 .. OPP-050 have none at all — 4 of 50 opportunities = 8% (Appendix C).
+--   * 22 rows cannot resolve to a family = 22% (Appendix C): 14 with product_id NULL,
+--     8 pointing at a product id that is not in the product table.
+--   * 6 rows have total_price <> quantity * unit_price — the R2.5 revenue-figure choice.
 INSERT INTO opportunity_line_item VALUES
-  ('LI-001','OPP-001','Core subscription',   4, 9000.00),
-  ('LI-002','OPP-001','Support tier 2',      1,12000.00),
-  ('LI-003','OPP-003','Platform licence',   10,18000.00),
-  ('LI-004','OPP-003','Implementation',      1,30000.00),
-  ('LI-005','OPP-005','Onboarding services', 1,45250.00),
-  ('LI-006','OPP-005','Training days',       5,10000.00),
-  ('LI-007','OPP-006','Line hardware',       2,55000.00),
-  ('LI-008','OPP-006','Commissioning',       1,33000.00),
-  ('LI-009','OPP-008','Compliance module',   1,96800.00),
-  ('LI-010','OPP-008','Audit support',       2,40000.00),
-  ('LI-011','OPP-009','Campaign suite',      3,15300.00),
-  ('LI-012','OPP-010','Additional seats',   25, 1190.00),
-  ('LI-013','OPP-020','Analytics tier',      1,88500.00),
-  ('LI-014','OPP-020','Data connectors',     2,15000.00),
-  ('LI-015','OPP-023','Export packaging',    1,61250.00),
-  ('LI-901','OPP-777','Orphaned add-on',     1, 4500.00),
-  ('LI-902','OPP-778','Orphaned service',    2, 2250.00);
+  ('LI-001','OPP-001','PRD-01', 12, 6200.00, 74400.00,'BATCH-2026-08-01',TIMESTAMP '2026-08-01 02:00:00'),
+  ('LI-002','OPP-001','PRD-12',  8, 3800.00, 30400.00,'BATCH-2026-08-01',TIMESTAMP '2026-08-01 02:00:00'),
+  ('LI-003','OPP-001','PRD-14', 40,  120.00,  4800.00,'BATCH-2026-08-01',TIMESTAMP '2026-08-01 02:00:00'),
+  ('LI-004','OPP-002','PRD-05',110, 1450.00,159500.00,'BATCH-2026-08-01',TIMESTAMP '2026-08-01 02:00:00'),
+  ('LI-005','OPP-002','PRD-06', 45, 3900.00,175500.00,'BATCH-2026-08-01',TIMESTAMP '2026-08-01 02:00:00'),
+  ('LI-006','OPP-002','PRD-16',200,   95.00, 19000.00,'BATCH-2026-08-01',TIMESTAMP '2026-08-01 02:00:00'),
+  ('LI-007','OPP-003','PRD-02', 18, 5400.00, 97200.00,'BATCH-2026-08-01',TIMESTAMP '2026-08-01 02:00:00'),
+  ('LI-008','OPP-003','PRD-13', 22, 1900.00, 41800.00,'BATCH-2026-08-01',TIMESTAMP '2026-08-01 02:00:00'),
+  ('LI-009','OPP-004','PRD-03', 14, 4700.00, 65800.00,'BATCH-2026-08-01',TIMESTAMP '2026-08-01 02:00:00'),
+  ('LI-010','OPP-004','PRD-15', 60,  105.00,  6300.00,'BATCH-2026-08-01',TIMESTAMP '2026-08-01 02:00:00'),
+  ('LI-011','OPP-005','PRD-04', 26, 5100.00,132600.00,'BATCH-2026-08-01',TIMESTAMP '2026-08-01 02:00:00'),
+  ('LI-012','OPP-005','PRD-10', 90,  310.00, 27900.00,'BATCH-2026-08-01',TIMESTAMP '2026-08-01 02:00:00'),
+  ('LI-013','OPP-005','PRD-11', 90,  240.00, 21600.00,'BATCH-2026-08-01',TIMESTAMP '2026-08-01 02:00:00'),
+  ('LI-014','OPP-006','PRD-07', 35, 1100.00, 38500.00,'BATCH-2026-08-01',TIMESTAMP '2026-08-01 02:00:00'),
+  ('LI-015','OPP-006','PRD-17',150,   18.00,  2700.00,'BATCH-2026-08-01',TIMESTAMP '2026-08-01 02:00:00'),
+  ('LI-016','OPP-007','PRD-01', 15, 6200.00, 93000.00,'BATCH-2026-08-01',TIMESTAMP '2026-08-01 02:00:00'),
+  ('LI-017','OPP-007','PRD-08', 70,  420.00, 29400.00,'BATCH-2026-08-01',TIMESTAMP '2026-08-01 02:00:00'),
+  ('LI-018','OPP-008','PRD-05', 30, 1450.00, 43500.00,'BATCH-2026-08-01',TIMESTAMP '2026-08-01 02:00:00'),
+  ('LI-019','OPP-009','PRD-07', 80, 1100.00, 88000.00,'BATCH-2026-08-01',TIMESTAMP '2026-08-01 02:00:00'),
+  ('LI-020','OPP-009','PRD-09', 55,  180.00,  9900.00,'BATCH-2026-08-01',TIMESTAMP '2026-08-01 02:00:00'),
+  ('LI-021','OPP-010','PRD-03', 16, 4700.00, 75200.00,'BATCH-2026-08-01',TIMESTAMP '2026-08-01 02:00:00'),
+  ('LI-022','OPP-010','PRD-14', 90,  120.00, 10800.00,'BATCH-2026-08-01',TIMESTAMP '2026-08-01 02:00:00'),
+  ('LI-023','OPP-011','PRD-02', 48, 5400.00,259200.00,'BATCH-2026-08-01',TIMESTAMP '2026-08-01 02:00:00'),
+  ('LI-024','OPP-011','PRD-12', 40, 3800.00,152000.00,'BATCH-2026-08-01',TIMESTAMP '2026-08-01 02:00:00'),
+  ('LI-025','OPP-011','PRD-10',150,  310.00, 46500.00,'BATCH-2026-08-01',TIMESTAMP '2026-08-01 02:00:00'),
+  ('LI-026','OPP-012','PRD-06', 42, 3900.00,163800.00,'BATCH-2026-08-01',TIMESTAMP '2026-08-01 02:00:00'),
+  ('LI-027','OPP-012','PRD-05', 55, 1450.00, 79750.00,'BATCH-2026-08-01',TIMESTAMP '2026-08-01 02:00:00'),
+  ('LI-028','OPP-013','PRD-16',300,   95.00, 28500.00,'BATCH-2026-08-01',TIMESTAMP '2026-08-01 02:00:00'),
+  ('LI-029','OPP-013','PRD-17',400,   18.00,  7200.00,'BATCH-2026-08-01',TIMESTAMP '2026-08-01 02:00:00'),
+  ('LI-030','OPP-014','PRD-04', 20, 5100.00,102000.00,'BATCH-2026-08-01',TIMESTAMP '2026-08-01 02:00:00'),
+  ('LI-031','OPP-014','PRD-13', 18, 1900.00, 34200.00,'BATCH-2026-08-01',TIMESTAMP '2026-08-01 02:00:00'),
+  ('LI-032','OPP-015','PRD-07', 60, 1100.00, 66000.00,'BATCH-2026-08-01',TIMESTAMP '2026-08-01 02:00:00'),
+  ('LI-033','OPP-016','PRD-01', 20, 6200.00,124000.00,'BATCH-2026-08-01',TIMESTAMP '2026-08-01 02:00:00'),
+  ('LI-034','OPP-016','PRD-08', 90,  420.00, 37800.00,'BATCH-2026-08-01',TIMESTAMP '2026-08-01 02:00:00'),
+  ('LI-035','OPP-017','PRD-15', 90,  105.00,  9450.00,'BATCH-2026-08-01',TIMESTAMP '2026-08-01 02:00:00'),
+  ('LI-036','OPP-018','PRD-03', 22, 4700.00,103400.00,'BATCH-2026-08-01',TIMESTAMP '2026-08-01 02:00:00'),
+  ('LI-037','OPP-019','PRD-05', 55, 1450.00, 79750.00,'BATCH-2026-08-01',TIMESTAMP '2026-08-01 02:00:00'),
+  ('LI-038','OPP-020','PRD-02', 40, 5400.00,216000.00,'BATCH-2026-08-01',TIMESTAMP '2026-08-01 02:00:00'),
+  ('LI-039','OPP-020','PRD-12', 25, 3800.00, 95000.00,'BATCH-2026-08-01',TIMESTAMP '2026-08-01 02:00:00'),
+  ('LI-040','OPP-021','PRD-14',400,  120.00, 48000.00,'BATCH-2026-08-01',TIMESTAMP '2026-08-01 02:00:00'),
+  ('LI-041','OPP-022','PRD-06', 30, 3900.00,117000.00,'BATCH-2026-08-01',TIMESTAMP '2026-08-01 02:00:00'),
+  ('LI-042','OPP-022','PRD-05', 45, 1450.00, 65250.00,'BATCH-2026-08-01',TIMESTAMP '2026-08-01 02:00:00'),
+  ('LI-043','OPP-023','PRD-07', 70, 1100.00, 77000.00,'BATCH-2026-08-01',TIMESTAMP '2026-08-01 02:00:00'),
+  ('LI-044','OPP-024','PRD-16',450,   95.00, 42750.00,'BATCH-2026-08-01',TIMESTAMP '2026-08-01 02:00:00'),
+  ('LI-045','OPP-025','PRD-04', 24, 5100.00,122400.00,'BATCH-2026-08-01',TIMESTAMP '2026-08-01 02:00:00'),
+  ('LI-046','OPP-025','PRD-11', 90,  240.00, 21600.00,'BATCH-2026-08-01',TIMESTAMP '2026-08-01 02:00:00'),
+  ('LI-047','OPP-026','PRD-03', 18, 4700.00, 84600.00,'BATCH-2026-08-01',TIMESTAMP '2026-08-01 02:00:00'),
+  ('LI-048','OPP-027','PRD-01', 30, 6200.00,186000.00,'BATCH-2026-08-01',TIMESTAMP '2026-08-01 02:00:00'),
+  ('LI-049','OPP-027','PRD-09',120,  180.00, 21600.00,'BATCH-2026-08-01',TIMESTAMP '2026-08-01 02:00:00'),
+  ('LI-050','OPP-028','PRD-15', 60,  105.00,  6300.00,'BATCH-2026-08-01',TIMESTAMP '2026-08-01 02:00:00'),
+  ('LI-051','OPP-029','PRD-05', 65, 1450.00, 94250.00,'BATCH-2026-08-01',TIMESTAMP '2026-08-01 02:00:00'),
+  ('LI-052','OPP-030','PRD-02', 45, 5400.00,243000.00,'BATCH-2026-08-01',TIMESTAMP '2026-08-01 02:00:00'),
+  ('LI-053','OPP-030','PRD-13', 13, 1900.00, 24700.00,'BATCH-2026-08-01',TIMESTAMP '2026-08-01 02:00:00'),
+  ('LI-054','OPP-031','PRD-17',600,   18.00, 10800.00,'BATCH-2026-08-01',TIMESTAMP '2026-08-01 02:00:00'),
+  ('LI-055','OPP-032','PRD-06', 35, 3900.00,136500.00,'BATCH-2026-08-01',TIMESTAMP '2026-08-01 02:00:00'),
+  ('LI-056','OPP-032','PRD-08',100,  420.00, 42000.00,'BATCH-2026-08-01',TIMESTAMP '2026-08-01 02:00:00'),
+  ('LI-057','OPP-033','PRD-07', 75, 1100.00, 82500.00,'BATCH-2026-08-01',TIMESTAMP '2026-08-01 02:00:00'),
+  ('LI-058','OPP-034','PRD-04', 27, 5100.00,137700.00,'BATCH-2026-08-01',TIMESTAMP '2026-08-01 02:00:00'),
+  ('LI-059','OPP-035','PRD-14',550,  120.00, 66000.00,'BATCH-2026-08-01',TIMESTAMP '2026-08-01 02:00:00'),
+  ('LI-060','OPP-036','PRD-01', 25, 6200.00,155000.00,'BATCH-2026-08-01',TIMESTAMP '2026-08-01 02:00:00'),
+  ('LI-061','OPP-037','PRD-05', 53, 1450.00, 76850.00,'BATCH-2026-08-01',TIMESTAMP '2026-08-01 02:00:00'),
+  ('LI-062','OPP-038','PRD-12', 27, 3800.00,102600.00,'BATCH-2026-08-01',TIMESTAMP '2026-08-01 02:00:00'),
+  ('LI-063','OPP-039','PRD-03', 26, 4700.00,122200.00,'BATCH-2026-08-01',TIMESTAMP '2026-08-01 02:00:00'),
+  ('LI-064','OPP-040','PRD-10',290,  310.00, 89900.00,'BATCH-2026-08-01',TIMESTAMP '2026-08-01 02:00:00'),
+  ('LI-065','OPP-041','PRD-06', 43, 3900.00,167700.00,'BATCH-2026-08-01',TIMESTAMP '2026-08-01 02:00:00'),
+  ('LI-066','OPP-042','PRD-07', 77, 1100.00, 84700.00,'BATCH-2026-08-01',TIMESTAMP '2026-08-01 02:00:00'),
+  ('LI-067','OPP-043','PRD-04', 22, 5100.00,112200.00,'BATCH-2026-08-01',TIMESTAMP '2026-08-01 02:00:00'),
+  ('LI-068','OPP-044','PRD-15',700,  105.00, 73500.00,'BATCH-2026-08-01',TIMESTAMP '2026-08-01 02:00:00'),
+  ('LI-069','OPP-045','PRD-02', 26, 5400.00,140400.00,'BATCH-2026-08-01',TIMESTAMP '2026-08-01 02:00:00'),
+  ('LI-070','OPP-046','PRD-16',730,   95.00, 69350.00,'BATCH-2026-08-01',TIMESTAMP '2026-08-01 02:00:00'),
+  -- Quantity x UnitPrice <> TotalPrice: the R2.5 / Appendix C discrepancy. 6 rows.
+  ('LI-071','OPP-001','PRD-08', 25,  420.00, 11000.00,'BATCH-2026-08-01',TIMESTAMP '2026-08-01 02:00:00'),
+  ('LI-072','OPP-005','PRD-09', 30,  180.00,  5000.00,'BATCH-2026-08-01',TIMESTAMP '2026-08-01 02:00:00'),
+  ('LI-073','OPP-011','PRD-11', 44,  240.00, 11000.00,'BATCH-2026-08-01',TIMESTAMP '2026-08-01 02:00:00'),
+  ('LI-074','OPP-020','PRD-14',120,  120.00, 15000.00,'BATCH-2026-08-01',TIMESTAMP '2026-08-01 02:00:00'),
+  ('LI-075','OPP-030','PRD-17',250,   18.00,  5000.00,'BATCH-2026-08-01',TIMESTAMP '2026-08-01 02:00:00'),
+  ('LI-076','OPP-036','PRD-15', 95,  105.00, 10500.00,'BATCH-2026-08-01',TIMESTAMP '2026-08-01 02:00:00'),
+  -- Cannot resolve to a family: product_id NULL. 14 rows.
+  ('LI-077','OPP-002',NULL,     18, 2400.00, 43200.00,'BATCH-2026-08-01',TIMESTAMP '2026-08-01 02:00:00'),
+  ('LI-078','OPP-003',NULL,     12, 1850.00, 22200.00,'BATCH-2026-08-01',TIMESTAMP '2026-08-01 02:00:00'),
+  ('LI-079','OPP-006',NULL,     30,  640.00, 19200.00,'BATCH-2026-08-01',TIMESTAMP '2026-08-01 02:00:00'),
+  ('LI-080','OPP-009',NULL,     22, 1250.00, 27500.00,'BATCH-2026-08-01',TIMESTAMP '2026-08-01 02:00:00'),
+  ('LI-081','OPP-012',NULL,     40,  890.00, 35600.00,'BATCH-2026-08-01',TIMESTAMP '2026-08-01 02:00:00'),
+  ('LI-082','OPP-015',NULL,     16, 2100.00, 33600.00,'BATCH-2026-08-01',TIMESTAMP '2026-08-01 02:00:00'),
+  ('LI-083','OPP-018',NULL,     28,  760.00, 21280.00,'BATCH-2026-08-01',TIMESTAMP '2026-08-01 02:00:00'),
+  ('LI-084','OPP-021',NULL,     35,  540.00, 18900.00,'BATCH-2026-08-01',TIMESTAMP '2026-08-01 02:00:00'),
+  ('LI-085','OPP-024',NULL,     19, 1320.00, 25080.00,'BATCH-2026-08-01',TIMESTAMP '2026-08-01 02:00:00'),
+  ('LI-086','OPP-027',NULL,     24,  980.00, 23520.00,'BATCH-2026-08-01',TIMESTAMP '2026-08-01 02:00:00'),
+  ('LI-087','OPP-031',NULL,     31,  610.00, 18910.00,'BATCH-2026-08-01',TIMESTAMP '2026-08-01 02:00:00'),
+  ('LI-088','OPP-034',NULL,     14, 1740.00, 24360.00,'BATCH-2026-08-01',TIMESTAMP '2026-08-01 02:00:00'),
+  ('LI-089','OPP-038',NULL,     21, 1150.00, 24150.00,'BATCH-2026-08-01',TIMESTAMP '2026-08-01 02:00:00'),
+  ('LI-090','OPP-041',NULL,     26,  870.00, 22620.00,'BATCH-2026-08-01',TIMESTAMP '2026-08-01 02:00:00'),
+  -- Cannot resolve to a family: product_id points at a product that is not there. 8 rows.
+  ('LI-091','OPP-004','PRD-90', 15, 1400.00, 21000.00,'BATCH-2026-08-01',TIMESTAMP '2026-08-01 02:00:00'),
+  ('LI-092','OPP-007','PRD-91', 20, 1150.00, 23000.00,'BATCH-2026-08-01',TIMESTAMP '2026-08-01 02:00:00'),
+  ('LI-093','OPP-010','PRD-92', 25,  920.00, 23000.00,'BATCH-2026-08-01',TIMESTAMP '2026-08-01 02:00:00'),
+  ('LI-094','OPP-014','PRD-93', 18, 1310.00, 23580.00,'BATCH-2026-08-01',TIMESTAMP '2026-08-01 02:00:00'),
+  ('LI-095','OPP-019','PRD-94', 22, 1080.00, 23760.00,'BATCH-2026-08-01',TIMESTAMP '2026-08-01 02:00:00'),
+  ('LI-096','OPP-023','PRD-95', 30,  790.00, 23700.00,'BATCH-2026-08-01',TIMESTAMP '2026-08-01 02:00:00'),
+  ('LI-097','OPP-029','PRD-96', 17, 1390.00, 23630.00,'BATCH-2026-08-01',TIMESTAMP '2026-08-01 02:00:00'),
+  ('LI-098','OPP-033','PRD-97', 24,  985.00, 23640.00,'BATCH-2026-08-01',TIMESTAMP '2026-08-01 02:00:00'),
+  -- Two ordinary rows so the totals are not all round numbers.
+  ('LI-099','OPP-037','PRD-13', 11, 1900.00, 20900.00,'BATCH-2026-08-01',TIMESTAMP '2026-08-01 02:00:00'),
+  ('LI-100','OPP-039','PRD-10', 33,  310.00, 10230.00,'BATCH-2026-08-01',TIMESTAMP '2026-08-01 02:00:00');
